@@ -1,0 +1,62 @@
+FROM alpine AS builder
+
+# Download QEMU, see https://github.com/docker/hub-feedback/issues/1261
+
+ENV QEMU_URL https://github.com/balena-io/qemu/releases/download/v3.0.0%2Bresin/qemu-3.0.0+resin-arm.tar.gz
+
+RUN apk add curl && curl -L ${QEMU_URL} | tar zxvf - -C . --strip-components 1
+
+#
+#
+#
+FROM arm32v5/debian:jessie-slim
+
+# Add QEMU
+COPY --from=builder qemu-arm-static /usr/bin
+
+WORKDIR /root
+
+ENV PATH="/root/.local/bin/:/opt/exodus/bin:$PATH"
+
+# Install binary helpers: This fixes everything!
+RUN echo "deb http://deb.debian.org/debian buster main" >> /etc/apt/sources.list \
+    && apt-get update
+
+RUN apt-get install -y patchelf
+# Manually add c libraries to a new folder (instead of install libc6)
+ADD data.tar /opt
+
+ADD exodus-python3.7-bundle.sh test.sh ./
+
+RUN ./exodus-python3.7-bundle.sh \
+    && cp -L /opt/exodus/bundles/c532a518624bb34c3e255d8e65d19525cea8404293d0a98d4c170af784f71e82/lib/arm-linux-gnueabi/libexpat.so.1 /opt/lib/arm-linux-gnueabi/ \
+    && cp -L /opt/exodus/bundles/c532a518624bb34c3e255d8e65d19525cea8404293d0a98d4c170af784f71e82/lib/arm-linux-gnueabi/libgcc_s.so.1 /opt/lib/arm-linux-gnueabi/
+
+
+ENV py=/opt/exodus/bundles/c532a518624bb34c3e255d8e65d19525cea8404293d0a98d4c170af784f71e82/usr/bin/python3.7-x
+ENV py_ld=/opt/exodus/bundles/c532a518624bb34c3e255d8e65d19525cea8404293d0a98d4c170af784f71e82/usr/bin/linker-85d88618b80a0445448d5296c6a9dcf5ffd2b72001b764cc5e6fdd87c9621cb2
+
+
+
+# -------- WORKING ------------------------------
+# change the default lib search path for all .so files
+ENV rpath=/opt/lib:/opt/lib/arm-linux-gnueabi
+
+# All .so files within the python install need to be changed! (including dynload files)
+RUN find /opt/exodus/bundles/c532a518624bb34c3e255d8e65d19525cea8404293d0a98d4c170af784f71e82/ -name '*.so*' -exec patchelf --set-rpath "$rpath" {} \;
+RUN find /opt/lib -name '*.so*' -exec patchelf --set-rpath "$rpath" {} \;
+
+RUN patchelf --set-interpreter /opt/lib/ld-linux.so.3 --set-rpath "$rpath" "$py"
+
+# -------- END ------------------------------
+
+# Bind the python linker and its libraries, so it can be launched without the exodus starter script
+# You must use the linker- file copied by exodus!!!
+RUN patchelf --set-interpreter $py_ld --set-rpath "$rpath" "$py" \
+    && cp $py /usr/bin/python3.7
+
+RUN /root/test.sh
+
+
+# Run the application
+CMD [ "/usr/bin/python3.7" ]
